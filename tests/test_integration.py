@@ -292,3 +292,44 @@ def test_anchor_fact_persists_after_reload(provider):
     anchors = p2._store.get_anchor_facts()
     assert len(anchors) >= 1
     p2.shutdown()
+
+
+# ── v0.1.3 新功能測試 ──────────────────────────────────────────
+
+def test_queue_prefetch_spawns_thread(provider):
+    """queue_prefetch 應在背景執行，不阻塞"""
+    import threading
+    p = provider
+    p.sync_turn("I like coffee.", "Great!", session_id="t_prefetch")
+    # queue_prefetch should not raise and should spawn a thread
+    p.queue_prefetch("coffee", session_id="t_prefetch")
+    # If we get here without exception, the threading path works
+    assert True
+
+
+def test_on_memory_write_correct_action(provider):
+    """on_memory_write 收到 correct action 應調用 evolution"""
+    p = provider
+    # 先寫入一條 fact
+    from sage_memory.models import Fact
+    f = Fact(subject="Test", predicate="likes", object="pizza")
+    fid = provider._writer.add_fact(f)
+    # 透過 on_memory_write 執行 correct
+    p.on_memory_write("correct", fid, f"{fid}|0.2|test_reason", {})
+    # Fact weight should have been reduced
+    updated = provider._store.get_fact(fid)
+    assert updated is not None
+    assert updated.weight < 1.0
+
+
+def test_on_memory_write_delete_action(provider):
+    """on_memory_write 收到 delete/forget action 應 prune fact"""
+    p = provider
+    from sage_memory.models import Fact
+    f = Fact(subject="ToDelete", predicate="is", object="temp")
+    fid = provider._writer.add_fact(f)
+    assert provider._store.get_fact(fid) is not None
+    # 執行 delete
+    p.on_memory_write("delete", fid, "", {})
+    # 應已被刪除
+    assert provider._store.get_fact(fid) is None

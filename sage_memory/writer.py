@@ -208,18 +208,20 @@ class MemoryWriter:
         return result
 
     def _find_contradiction(self, fact: Fact) -> Optional[Fact]:
+        norm_pred = _PREDICATE_SYNONYMS.get(fact.predicate, fact.predicate)
         existing = self.store.search_by_entity(fact.subject)
         for e in existing:
             if e.subject.lower() != fact.subject.lower():
                 continue
             if e.object.lower() != fact.object.lower():
                 continue
-            ep = frozenset({e.predicate})
-            fp = frozenset({fact.predicate})
+            e_norm = _PREDICATE_SYNONYMS.get(e.predicate, e.predicate)
+            ep = frozenset({e_norm})
+            fp = frozenset({norm_pred})
             for antonym_pair in _ANTONYM_PREDICATES:
-                if (fact.predicate in antonym_pair
-                        and e.predicate in antonym_pair
-                        and e.predicate != fact.predicate):
+                if (norm_pred in antonym_pair
+                        and e_norm in antonym_pair
+                        and e_norm != norm_pred):
                     return e
         return None
 
@@ -263,17 +265,22 @@ class MemoryWriter:
         return None
 
     def _normalize_entity(self, raw: str, subject_hint: Optional[str]) -> str:
-        cleaned = raw.strip().lower()
-        if cleaned in _FIRST_PERSON:
+        cleaned = raw.strip()
+        cleaned_lower = cleaned.lower()
+        if cleaned_lower in _FIRST_PERSON:
             return subject_hint or "user"
-        cleaned = re.sub(r"^(the|a|an)\s+", "", cleaned)
-        return cleaned.capitalize() if cleaned else ""
+        cleaned = re.sub(r"^(the|a|an)\s+", "", cleaned, flags=re.IGNORECASE)
+        has_chinese = bool(re.search(r"[一-鿿]", cleaned))
+        return cleaned if has_chinese else cleaned.capitalize()
 
     def _normalize_object(self, raw: str) -> str:
         cleaned = raw.strip()
         cleaned = re.sub(r"[,.;:]+$", "", cleaned)
         cleaned = re.sub(r"^(the|a|an)\s+", "", cleaned, flags=re.IGNORECASE)
-        return cleaned.strip()
+        cleaned = cleaned.strip()
+        if cleaned.lower() in _NOISE_OBJECTS:
+            return ""
+        return cleaned
 
     def _find_similar(self, fact: Fact) -> Optional[Fact]:
         existing = self.store.search_by_entity(fact.subject, min_weight=0.01)
@@ -290,39 +297,43 @@ class MemoryWriter:
     ) -> list[Fact]:
         facts: list[Fact] = []
         seen: set[tuple[str, str, str]] = set()
-        sentences = re.split(
-            r"[.!?。！？\n]+|(?:\s+(?:and|but|however|although|so|then)\s+)",
-            text, flags=re.IGNORECASE,
-        )
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if len(sentence) < 4:
-                continue
-            event_time = self._extract_event_time(sentence)
-            for pattern, predicate, base_weight in _RELATION_PATTERNS:
-                m = re.search(pattern, sentence, re.IGNORECASE)
-                if not m:
+        # Primary split: sentence-ending punctuation or newlines
+        primary = re.split(r"(?<=[.!?。！？])\s+|[\n]+", text)
+        for segment in primary:
+            # Secondary split: conjunctions after sentence boundary
+            sub_parts = re.split(
+                r"(?<=[.!?])\s+(?:but|however|although|so|then)\s+",
+                segment, flags=re.IGNORECASE,
+            )
+            for sentence in sub_parts:
+                sentence = sentence.strip()
+                if len(sentence) < 4:
                     continue
-                subj_raw = m.group(1).strip()
-                obj_raw  = m.group(2).strip()
-                subj = self._normalize_entity(subj_raw, subject_hint)
-                obj  = self._normalize_object(obj_raw)
-                if not subj or not obj:
-                    continue
-                if obj.lower() in _NOISE_OBJECTS:
-                    continue
-                if len(subj) > 60 or len(obj) > 100:
-                    continue
-                norm_pred = _PREDICATE_SYNONYMS.get(predicate, predicate)
-                key = (subj.lower(), norm_pred, obj.lower())
-                if key in seen:
-                    continue
-                seen.add(key)
-                weight = base_weight * (0.8 if source == "inference" else 1.0)
-                facts.append(Fact(
-                    subject=subj, predicate=norm_pred, object=obj,
-                    timestamp=time.time(), event_time=event_time,
-                    weight=weight, confidence=base_weight,
-                    source=source, session_id=session_id,
-                ))
+                event_time = self._extract_event_time(sentence)
+                for pattern, predicate, base_weight in _RELATION_PATTERNS:
+                    m = re.search(pattern, sentence, re.IGNORECASE)
+                    if not m or len(m.groups()) < 2:
+                        continue
+                    subj_raw = m.group(1).strip()
+                    obj_raw  = m.group(2).strip()
+                    subj = self._normalize_entity(subj_raw, subject_hint)
+                    obj  = self._normalize_object(obj_raw)
+                    if not subj or not obj:
+                        continue
+                    if obj.lower() in _NOISE_OBJECTS:
+                        continue
+                    if len(subj) > 60 or len(obj) > 100:
+                        continue
+                    norm_pred = _PREDICATE_SYNONYMS.get(predicate, predicate)
+                    key = (subj.lower(), norm_pred, obj.lower())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    weight = base_weight * (0.8 if source == "inference" else 1.0)
+                    facts.append(Fact(
+                        subject=subj, predicate=norm_pred, object=obj,
+                        timestamp=time.time(), event_time=event_time,
+                        weight=weight, confidence=base_weight,
+                        source=source, session_id=session_id,
+                    ))
         return facts

@@ -37,6 +37,8 @@ _DECAY_RATES: dict[str, float] = {
     "correction":  0.02,
 }
 
+from .writer import _PREDICATE_SYNONYMS
+
 _CONFLICT_PREDICATES: list[frozenset[str]] = [
     frozenset({"likes",    "hates"}),
     frozenset({"likes",    "dislikes"}),
@@ -50,7 +52,7 @@ _CONFLICT_PREDICATES: list[frozenset[str]] = [
 class MemoryEvolution:
     """Self-Correction Loop v6: decay floor + merge lineage + adaptive threshold"""
 
-    PRUNE_THRESHOLD  = 0.05
+    PRUNE_THRESHOLD  = 0.03
     CONFLICT_PENALTY = 0.3
 
     def __init__(self, graph_store: GraphStore):
@@ -184,6 +186,9 @@ class MemoryEvolution:
             new_weight = max(ANCHOR_DECAY_FLOOR, new_weight)
         else:
             new_weight = max(DECAY_FLOOR, new_weight)
+        # 衰減緩衝：低於 floor 時額外補充 0.02，避免完全丢失
+        if new_weight <= DECAY_FLOOR:
+            new_weight = min(DECAY_FLOOR + 0.02, fact.weight)
         if new_weight < self.PRUNE_THRESHOLD:
             return self._prune(fact_id, reason=f"{reason}→below_threshold")
         ok = self.store.update_weight(fact_id, new_weight)
@@ -239,18 +244,8 @@ class MemoryEvolution:
         merged_weight = min(2.0, target.weight + source.weight * 0.5)
         self.store.update_weight(target_id, merged_weight)
 
-        # E-2: Lineage tracking
-        existing_lineage = target.merged_from or []
-        new_lineage = existing_lineage + [source_id]
-        conn = self.store._get_conn()
-        conn.execute(
-            "UPDATE facts SET merge_reason = ? WHERE fact_id = ?",
-            (json.dumps({
-                "merged_from": new_lineage,
-                "reason": reason,
-            }), target_id),
-        )
-        conn.commit()
+        # E-2: Lineage tracking via update_merge_lineage
+        self.store.update_merge_lineage(target_id, [source_id], reason)
 
         self._record(EvolutionEvent("merge", source_id, target_id,
                                     source.weight, 0.0, reason=reason))
@@ -272,7 +267,9 @@ class MemoryEvolution:
     def _are_conflicting(self, fa: Fact, fb: Fact) -> bool:
         if fa.subject.lower() != fb.subject.lower():
             return False
-        pair = frozenset({fa.predicate, fb.predicate})
+        fa_norm = _PREDICATE_SYNONYMS.get(fa.predicate, fa.predicate)
+        fb_norm = _PREDICATE_SYNONYMS.get(fb.predicate, fb.predicate)
+        pair = frozenset({fa_norm, fb_norm})
         return pair in _CONFLICT_PREDICATES
 
     def _record(self, event: EvolutionEvent) -> None:

@@ -103,6 +103,8 @@ class MemoryReader:
         raw_scores: list[float] = []
 
         for f in facts:
+            subj_lower = f.subject.lower()
+            subject_weight = 0.5 if "user" in subj_lower else 0.3
             age_days  = (now - f.timestamp) / 86400
             recency   = math.exp(-age_days / 30.0)
             text      = f"{f.subject} {f.predicate} {f.object}".lower()
@@ -113,16 +115,18 @@ class MemoryReader:
                 self.weights["weight"]     * f.weight +
                 self.weights["recency"]    * recency +
                 self.weights["relevance"]   * relevance +
-                self.weights["confidence"]  * f.confidence
+                self.weights["confidence"]  * f.confidence +
+                subject_weight
             ) * boost
             raw_scores.append(raw)
 
         if not raw_scores:
             return facts
         mean_s = sum(raw_scores) / len(raw_scores)
-        std_s  = (
-            sum((s - mean_s) ** 2 for s in raw_scores) / len(raw_scores)
-        ) ** 0.5 or 1.0
+        std_s  = max(
+            ((sum((s - mean_s) ** 2 for s in raw_scores) / len(raw_scores)) ** 0.5),
+            0.1,
+        )
 
         result = []
         for fact, raw in zip(facts, raw_scores):
@@ -139,15 +143,21 @@ class MemoryReader:
         mode: RecallMode,
     ) -> list[Fact]:
         max_per_subject = 2 if mode == "precise" else 3
+        max_per_pair    = 1 if mode == "balanced" else 2
         subject_count: dict[str, int] = defaultdict(int)
+        pair_count: dict[tuple[str, str], int] = defaultdict(int)
         selected: list[Fact] = []
 
         for fact in facts:
             subj = fact.subject.lower()
+            pair_key = (subj, fact.predicate.lower())
             if subject_count[subj] >= max_per_subject:
+                continue
+            if pair_count[pair_key] >= max_per_pair:
                 continue
             selected.append(fact)
             subject_count[subj] += 1
+            pair_count[pair_key] += 1
             if len(selected) >= top_k * 2:
                 break
 

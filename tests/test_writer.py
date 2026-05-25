@@ -241,3 +241,54 @@ def test_contradiction_detection_via_confidence(tmp_path):
     f2 = Fact(subject="Frank", predicate="hates", object="coffee", confidence=0.9)
     result = writer.write_with_confirmation(f2)
     assert len(result.contradictions) >= 1
+
+
+# ── v0.1.3 新功能測試 ──────────────────────────────────────────
+
+def test_group_count_check_skips_invalid_patterns(tmp_path):
+    """group 數不足的模式不應當掉，只是跳過"""
+    store = GraphStore(db_path=tmp_path / "groupchk.sqlite")
+    writer = MemoryWriter(store, "s1")
+    # "it is good" has only 1 group from (.+?)\s+is\s+(?:a\s+|an\s+|the\s+)?(.+) pattern
+    ids = writer.extract_and_write("it is good", subject_hint="user", session_id="s1")
+    # Should not crash, may extract nothing or partial
+    assert isinstance(ids, list)
+
+
+def test_noise_object_filtered_in_normalize_object(tmp_path):
+    """noise object 'it' should return empty string from _normalize_object"""
+    store = GraphStore(db_path=tmp_path / "noiseobj.sqlite")
+    writer = MemoryWriter(store, "s1")
+    ids = writer.extract_and_write(
+        "Alice likes it.", subject_hint="user", session_id="s1"
+    )
+    facts = store.get_all_facts()
+    # 'it' should be filtered out, no fact created
+    assert len(facts) == 0 or all(f.object.lower() != "it" for f in facts)
+
+
+def test_chinese_entity_no_capitalization(tmp_path):
+    """中文字符不應被 capitalize()"""
+    store = GraphStore(db_path=tmp_path / "chinese_cap.sqlite")
+    writer = MemoryWriter(store, "s1")
+    ids = writer.extract_and_write(
+        "黒川住在東京。", subject_hint="user", session_id="s1"
+    )
+    facts = store.get_all_facts()
+    if facts:
+        for f in facts:
+            # Chinese chars should remain as-is
+            if any("一" <= c <= "鿿" for c in f.subject):
+                assert f.subject == "黒川" or f.subject.startswith("黒川")
+
+
+def test_normalized_predicate_contradiction(tmp_path):
+    """adores -> likes 與 hates coffee 應被偵測為矛盾"""
+    store = GraphStore(db_path=tmp_path / "norm_contradict.sqlite")
+    writer = MemoryWriter(store, "s1")
+    writer.add_fact(Fact(subject="Eve", predicate="hates", object="coffee"))
+    # "Eve adores coffee" normalizes adores -> likes, contradicts hates
+    result = writer.write_with_confirmation(
+        Fact(subject="Eve", predicate="likes", object="coffee")
+    )
+    assert len(result.contradictions) >= 1

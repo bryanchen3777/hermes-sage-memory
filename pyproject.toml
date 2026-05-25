@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hermes-sage-memory"
-version = "0.1.2"
+version = "0.1.3"
 description = "SAGE-lite causal graph memory plugin for Hermes Agent"
 readme = "README.md"
 license = { text = "MIT" }

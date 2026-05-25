@@ -268,3 +268,30 @@ def test_merge_edge_conflict_detected_post_merge(tmp_path):
     conflicts_before = evo.detect_conflicts()
     # loves / hates 是衝突對，所以應該有衝突
     assert len(conflicts_before) >= 1
+
+
+# ── v0.1.3 新功能測試 ──────────────────────────────────────────
+
+def test_prune_threshold_003(tmp_path):
+    """PRUNE_THRESHOLD 應為 0.03"""
+    from sage_memory.evolution import MemoryEvolution
+    store = GraphStore(db_path=tmp_path / "prune03.sqlite")
+    evo = MemoryEvolution(store)
+    assert evo.PRUNE_THRESHOLD == 0.03
+
+
+def test_decay_buffer_preserves_memory(tmp_path):
+    """DECAY_FLOOR + 0.02 緩衝應防止完全丢失"""
+    from sage_memory.evolution import DECAY_FLOOR
+    store = GraphStore(db_path=tmp_path / "decaybuf.sqlite")
+    writer = MemoryWriter(store, "s1")
+    evo = MemoryEvolution(store)
+    f = Fact(subject="Zara", predicate="likes", object="pizza")
+    writer.add_fact(f)
+    # Apply many decays
+    for _ in range(50):
+        evo.apply_correction(f.fact_id, "decay", delta=0.05)
+    result = store.get_fact(f.fact_id)
+    # Should still exist due to decay buffer
+    assert result is not None
+    assert result.weight >= DECAY_FLOOR

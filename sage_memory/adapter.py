@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -187,7 +188,12 @@ class SAGELiteProvider(MemoryProvider):
         return summary
 
     def queue_prefetch(self, query: str, *, session_id: str) -> None:
-        pass
+        t = threading.Thread(
+            target=self.prefetch,
+            kwargs={"query": query, "session_id": session_id},
+            daemon=True,
+        )
+        t.start()
 
     def sync_turn(
         self,
@@ -247,6 +253,18 @@ class SAGELiteProvider(MemoryProvider):
                 session_id=self._session_id,
                 source="inference",
             )
+        elif action in ("correct", "update") and self._evolution:
+            # content format: fact_id|new_weight or fact_id|delta|reason
+            parts = content.split("|")
+            if len(parts) >= 1:
+                fact_id = parts[0]
+                delta = float(parts[1]) if len(parts) > 1 else 0.1
+                reason = parts[2] if len(parts) > 2 else "user_correction"
+                self._evolution.apply_correction(
+                    fact_id, "decay", delta=delta, reason=reason
+                )
+        elif action in ("delete", "forget") and self._evolution:
+            self._evolution.apply_correction(target, "prune", reason="user_delete")
 
     def on_pre_compress(self, messages: list) -> str:
         if not self._store or self._store.edge_count == 0:
