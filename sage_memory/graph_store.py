@@ -13,7 +13,7 @@ from .models import Fact
 
 # 每累積 N 次寫入才 commit（WAL 模式下安全）
 _BATCH_SIZE = 20
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 
 class GraphStore:
@@ -135,11 +135,34 @@ class GraphStore:
                 "CREATE INDEX IF NOT EXISTS idx_anchor ON facts(is_anchor)"
             )
 
+        if from_version < 4:
+            try:
+                conn.execute(
+                    "ALTER TABLE facts ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0"
+                )
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute(
+                    "ALTER TABLE facts ADD COLUMN merged_from TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute(
+                    "ALTER TABLE facts ADD COLUMN merge_reason TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass
+
     def _row_to_fact(self, row: sqlite3.Row) -> Fact:
         d = dict(row)
         d.pop("tags", None)
         d["is_anchor"] = bool(d.get("is_anchor", 0))
         d.setdefault("event_time", None)
+        d.setdefault("confidence", 1.0)
+        d.setdefault("merged_from", None)
+        d.setdefault("merge_reason", None)
         return Fact(**d)
 
     def _load_from_db(self) -> None:

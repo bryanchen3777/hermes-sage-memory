@@ -134,12 +134,11 @@ def test_entity_alignment_no_match(tmp_path):
 
 
 def test_event_time_parsed_from_tomorrow(tmp_path):
-    """明天相關時間詞應被解析"""
+    """明天/tomorrow 時間詞應被解析"""
     store = GraphStore(db_path=tmp_path / "eventtime.sqlite")
     writer = MemoryWriter(store, "s1")
-    # "想要" matches Chinese pattern (.+?)想要(.+)
     ids = writer.extract_and_write(
-        "明天我想要去東京出差。",
+        "I want to go to Tokyo tomorrow.",
         subject_hint="user", session_id="s1", source="user"
     )
     assert len(ids) >= 1
@@ -193,3 +192,52 @@ def test_anchor_not_decay_on_scheduled(tmp_path):
     stats = evo.run_scheduled_decay(age_days_threshold=7.0)
     assert stats["anchors_protected"] == 1
     assert store.get_fact(old_fact.fact_id) is not None  # 仍在圖中
+
+
+# ── v0.1.2 新功能測試 ──────────────────────────────────────────
+
+def test_write_result_confirmation_success(tmp_path):
+    """write_with_confirmation 成功寫入應正確回報"""
+    from sage_memory.writer import WriteResult
+    store = GraphStore(db_path=tmp_path / "write_result.sqlite")
+    writer = MemoryWriter(store, "s1")
+    fact = Fact(subject="Dave", predicate="likes", object="pizza")
+    result = writer.write_with_confirmation(fact)
+    assert result.success_count >= 1
+    assert not result.has_failures
+    assert len(result.written) == 1
+
+
+def test_write_result_rejects_invalid_fact(tmp_path):
+    """空白 subject 應被 schema gate 拒絕"""
+    from sage_memory.writer import WriteResult
+    store = GraphStore(db_path=tmp_path / "schema_gate.sqlite")
+    writer = MemoryWriter(store, "s1")
+    fact = Fact(subject="", predicate="likes", object="pizza")
+    result = writer.write_with_confirmation(fact)
+    assert result.has_failures
+    assert len(result.rejected) == 1
+
+
+def test_predicate_normalization_via_extraction(tmp_path):
+    """透過 extract_and_write，adores/enjoys 應正規化為 likes"""
+    store = GraphStore(db_path=tmp_path / "pred_norm.sqlite")
+    writer = MemoryWriter(store, "s1")
+    ids1 = writer.extract_and_write("Eve adores music.", subject_hint="user", session_id="s1")
+    ids2 = writer.extract_and_write("Eve enjoys music.", subject_hint="user", session_id="s1")
+    # Both adores and enjoys normalize to "likes", so should dedup to 1 fact
+    assert store.edge_count == 1
+    assert store.get_all_facts()[0].predicate == "likes"
+
+
+def test_contradiction_detection_via_confidence(tmp_path):
+    """高 confidence 新 fact 覆蓋低 confidence 舊 fact"""
+    store = GraphStore(db_path=tmp_path / "contradict.sqlite")
+    writer = MemoryWriter(store, "s1")
+    # Write the first fact
+    f1 = Fact(subject="Frank", predicate="likes", object="coffee", confidence=0.5)
+    writer.add_fact(f1)
+    # Write contradiction with higher confidence
+    f2 = Fact(subject="Frank", predicate="hates", object="coffee", confidence=0.9)
+    result = writer.write_with_confirmation(f2)
+    assert len(result.contradictions) >= 1

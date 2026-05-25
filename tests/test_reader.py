@@ -105,3 +105,39 @@ def test_relevance_scoring_prefers_exact_match(populated_store):
         top = result.facts[0]
         text = f"{top.subject} {top.predicate} {top.object}".lower()
         assert "alice" in text or "coffee" in text
+
+
+# ── v0.1.2 新功能測試 ──────────────────────────────────────────
+
+def test_sigmoid_normalization_produces_scores_in_0_1(populated_store):
+    """sigmoid 正規化後分數應落在 0~1 區間"""
+    reader = MemoryReader(populated_store)
+    result = reader.retrieve_context("Alice coffee", top_k=5)
+    for fact in result.facts:
+        score = result.retrieval_scores.get(fact.fact_id, 0.0)
+        assert 0.0 <= score <= 1.0
+
+
+def test_diversity_filter_prevents_subject_collapse(populated_store):
+    """同 subject 超過 max_per_subject 應被過濾"""
+    reader = MemoryReader(populated_store)
+    # Add many facts for same subject
+    for i in range(5):
+        populated_store.add_fact(
+            Fact(subject="Alice", predicate="likes", object=f"item{i}")
+        )
+    result = reader.retrieve_context("Alice", top_k=10, mode="balanced")
+    subject_counts = {}
+    for f in result.facts:
+        s = f.subject.lower()
+        subject_counts[s] = subject_counts.get(s, 0) + 1
+    # Should not have more than 3 (max_per_subject for balanced)
+    for s, cnt in subject_counts.items():
+        assert cnt <= 3
+
+
+def test_retrieval_scores_map_populated(populated_store):
+    """retrieval_scores 應包含所有 retrieved facts 的分數"""
+    reader = MemoryReader(populated_store)
+    result = reader.retrieve_context("Alice", top_k=5)
+    assert len(result.retrieval_scores) == len(result.facts)

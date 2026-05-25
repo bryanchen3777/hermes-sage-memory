@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import time
 from collections import defaultdict
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 import networkx as nx
 
@@ -14,14 +14,30 @@ MAX_TOKENS_DEFAULT = 800
 CHARS_PER_TOKEN = 4
 RecallMode = Literal["precise", "balanced", "expansive"]
 
+DEFAULT_SCORE_WEIGHTS = {
+    "weight":     0.40,
+    "recency":    0.30,
+    "relevance":  0.20,
+    "confidence": 0.10,
+}
+
+
+def _sigmoid(x: float) -> float:
+    return 1.0 / (1.0 + math.exp(-x))
+
 
 class MemoryReader:
-    """Reader v3：三維評分 + recall_mode + 結構化 summary"""
+    """Reader v4: sigmoid 正規化 + diversity penalty + retrieval feedback hook"""
 
-    def __init__(self, graph_store: GraphStore):
+    def __init__(
+        self,
+        graph_store: GraphStore,
+        score_weights: Optional[dict[str, float]] = None,
+        on_retrieved: Optional[Callable[[ContextResult], None]] = None,
+    ):
         self.store = graph_store
-
-    # ── 主要公開 API ──────────────────────────────────────────
+        self.weights = score_weights or DEFAULT_SCORE_WEIGHTS
+        self.on_retrieved = on_retrieved
 
     def retrieve_context(
         self,
@@ -33,72 +49,126 @@ class MemoryReader:
         mode: RecallMode = "balanced",
         boost_tags: Optional[list[str]] = None,
     ) -> ContextResult:
-        """
-        主要檢索入口，對應 Hermes prefetch() hook。
-        三步驟：
-          1. 關鍵詞提取 → 相關 facts 候選集
-          2. 三維評分排序（weight × recency × relevance）
-          3. 依 mode 組裝 summary（token 受控）
-        """
         if self.store.edge_count == 0:
-            return ContextResult(facts=[], chains=[], summary="", token_estimate=0)
+            return ContextResult(facts=[], chains=[], summary="",
+                                 token_estimate=0)
 
         keywords = self._extract_keywords(query)
         if not keywords:
-            # query 太短或全是停用詞 → fallback 到最新高 weight facts
             return self._fallback_recent(top_k, max_tokens)
 
-        # Step 1：候選集
         candidates = self._gather_candidates(keywords, min_weight)
         if not candidates:
             return self._fallback_recent(top_k, max_tokens)
 
-        # Step 2：三維評分
-        scored = self._score_facts(candidates, keywords)
+        scored = self._score_and_normalize(candidates, keywords, boost_tags)
+        diverse = self._apply_diversity_filter(scored, top_k, mode)
 
-        # Step 3：依 mode 決定數量與展開深度
         if mode == "precise":
-            top_facts = scored[:min(top_k, 3)]
+            top_facts = diverse[:min(top_k, 3)]
             chains = []
         elif mode == "expansive":
-            top_facts = scored[:top_k * 2]
+            top_facts = diverse[:top_k * 2]
             chains = self._build_chains(keywords, max_hops=3)
-        else:  # balanced（預設）
-            top_facts = scored[:top_k]
+        else:
+            top_facts = diverse[:top_k]
             chains = self._build_chains(keywords, max_hops)
 
-        # Step 4：組裝 summary
         summary = self._build_summary(top_facts, chains, max_tokens, mode)
-        token_est = len(summary) // CHARS_PER_TOKEN
-
-        return ContextResult(
+        scores_map = {f.fact_id: getattr(f, "_score", 0.0) for f in top_facts}
+        result = ContextResult(
             facts=top_facts,
             chains=chains,
             summary=summary,
-            token_estimate=token_est,
+            token_estimate=len(summary) // CHARS_PER_TOKEN,
+            retrieval_scores=scores_map,
         )
+
+        if self.on_retrieved:
+            self.on_retrieved(result)
+
+        return result
+
+    # ── 評分 ──────────────────────────────────────────────────
+
+    def _score_and_normalize(
+        self,
+        facts: list[Fact],
+        keywords: list[str],
+        boost_tags: Optional[list[str]],
+    ) -> list[Fact]:
+        now = time.time()
+        kw_lower = [k.lower() for k in keywords]
+        boost_lower = [b.lower() for b in (boost_tags or [])]
+        raw_scores: list[float] = []
+
+        for f in facts:
+            age_days  = (now - f.timestamp) / 86400
+            recency   = math.exp(-age_days / 30.0)
+            text      = f"{f.subject} {f.predicate} {f.object}".lower()
+            relevance = sum(1 for kw in kw_lower if kw in text) / max(len(kw_lower), 1)
+            boost = 1.5 if any(b in text for b in boost_lower) else 1.0
+
+            raw = (
+                self.weights["weight"]     * f.weight +
+                self.weights["recency"]    * recency +
+                self.weights["relevance"]   * relevance +
+                self.weights["confidence"]  * f.confidence
+            ) * boost
+            raw_scores.append(raw)
+
+        if not raw_scores:
+            return facts
+        mean_s = sum(raw_scores) / len(raw_scores)
+        std_s  = (
+            sum((s - mean_s) ** 2 for s in raw_scores) / len(raw_scores)
+        ) ** 0.5 or 1.0
+
+        result = []
+        for fact, raw in zip(facts, raw_scores):
+            normalized = _sigmoid((raw - mean_s) / std_s)
+            fact._score = normalized  # type: ignore[attr-defined]
+            result.append(fact)
+
+        return sorted(result, key=lambda f: f._score, reverse=True)  # type: ignore
+
+    def _apply_diversity_filter(
+        self,
+        facts: list[Fact],
+        top_k: int,
+        mode: RecallMode,
+    ) -> list[Fact]:
+        max_per_subject = 2 if mode == "precise" else 3
+        subject_count: dict[str, int] = defaultdict(int)
+        selected: list[Fact] = []
+
+        for fact in facts:
+            subj = fact.subject.lower()
+            if subject_count[subj] >= max_per_subject:
+                continue
+            selected.append(fact)
+            subject_count[subj] += 1
+            if len(selected) >= top_k * 2:
+                break
+
+        return selected
 
     # ── 關鍵詞提取 ────────────────────────────────────────────
 
     def _extract_keywords(self, query: str) -> list[str]:
         import re
         stopwords = {
-            # 英文
-            "what", "who", "where", "when", "how", "why", "is", "are", "was",
-            "were", "the", "a", "an", "i", "you", "he", "she", "they", "we",
-            "do", "did", "does", "tell", "me", "about", "know", "can", "could",
-            "would", "should", "has", "have", "had", "been", "be", "my", "your",
-            "his", "her", "its", "our", "their", "this", "that", "which",
-            # 中文
+            "what", "who", "where", "when", "how", "why", "is", "are",
+            "was", "were", "the", "a", "an", "i", "you", "he", "she",
+            "they", "we", "do", "did", "does", "tell", "me", "about",
+            "know", "can", "could", "would", "should", "has", "have",
+            "had", "been", "be", "my", "your", "his", "her", "its",
             "嗎", "的", "我", "你", "他", "她", "是", "在", "有", "了",
-            "嗯", "呢", "吧", "啊", "哦", "喔", "什麼", "怎麼", "為什麼",
         }
-        # 同時抓英文詞和中文字符串
         tokens = re.findall(r"[一-鿿]{2,}|[a-zA-Z]{2,}", query)
-        result = [t for t in tokens if t.lower() not in stopwords]
-        return result[:6]  # 最多 6 個關鍵詞
+        return [t for t in tokens if t.lower() not in stopwords][:6]
 
-    # ── 候選集蒐集 ────────────────────────────────────────────
+    # ── 候選集 ────────────────────────────────────────────────
 
     def _gather_candidates(
         self, keywords: list[str], min_weight: float
@@ -112,55 +182,24 @@ class MemoryReader:
                     seen_ids.add(fact.fact_id)
         return candidates
 
-    # ── 三維評分 ──────────────────────────────────────────────
-
-    def _score_facts(self, facts: list[Fact], keywords: list[str]) -> list[Fact]:
-        """
-        綜合分數 = weight × recency_score × relevance_score
-        - weight：圖上儲存的信度（0~1）
-        - recency：越新越高，半衰期 30 天
-        - relevance：關鍵詞命中數 / 關鍵詞總數（TF 風格）
-        """
-        now = time.time()
-        kw_lower = [k.lower() for k in keywords]
-
-        def composite_score(f: Fact) -> float:
-            # Recency：半衰期 30 天
-            age_days = (now - f.timestamp) / 86400
-            recency = math.exp(-age_days / 30.0)
-
-            # Relevance：在 subject + predicate + object 中命中的關鍵詞比例
-            text = f"{f.subject} {f.predicate} {f.object}".lower()
-            hits = sum(1 for kw in kw_lower if kw in text)
-            relevance = hits / max(len(kw_lower), 1)
-
-            return f.weight * recency * (0.4 + 0.6 * relevance)
-
-        return sorted(facts, key=composite_score, reverse=True)
-
-    # ── 多跳鏈建構 ────────────────────────────────────────────
+    # ── 多跳鏈 ────────────────────────────────────────────────
 
     def _build_chains(
         self, keywords: list[str], max_hops: int
     ) -> list[list[Fact]]:
         chains: list[list[Fact]] = []
         seen_chain_keys: set[frozenset] = set()
-
         for kw in keywords[:3]:
             ego = self.store.get_ego_graph(kw, radius=max_hops)
             if ego.number_of_edges() == 0:
                 continue
-
-            # 依 weight 排序取最強的 edges
             edges_sorted = sorted(
                 ego.edges(data=True),
                 key=lambda x: x[2].get("weight", 0),
                 reverse=True,
             )[:6]
-
             chain: list[Fact] = []
             chain_key_parts: set[str] = set()
-
             for u, v, data in edges_sorted:
                 fid = data.get("fact_id", "")
                 if fid in chain_key_parts:
@@ -176,54 +215,45 @@ class MemoryReader:
                     fact_id=fid,
                     session_id=data.get("session_id", ""),
                 ))
-
-            # 去重：相同邊集合的 chain 不重複加入
             chain_key = frozenset(f.fact_id for f in chain)
             if chain and chain_key not in seen_chain_keys:
                 chains.append(chain)
                 seen_chain_keys.add(chain_key)
-
         return chains
 
-    # ── Summary 組裝 ──────────────────────────────────────────
+    # ── Summary ───────────────────────────────────────────────
 
     def _build_summary(
-        self,
-        facts: list[Fact],
-        chains: list[list[Fact]],
-        max_tokens: int,
-        mode: RecallMode,
+        self, facts: list[Fact], chains: list[list[Fact]],
+        max_tokens: int, mode: RecallMode,
     ) -> str:
         budget_chars = max_tokens * CHARS_PER_TOKEN
         lines: list[str] = []
         used = 0
-
-        # === 記憶區 ===
         if facts:
             header = "## Recalled Memory"
             lines.append(header)
             used += len(header)
-
             for f in facts:
-                confidence = (
-                    "high"   if f.weight >= 0.8 else
-                    "medium" if f.weight >= 0.5 else
+                score = getattr(f, "_score", f.weight)
+                confidence_tag = (
+                    "high"   if score >= 0.7 else
+                    "medium" if score >= 0.4 else
                     "low"
                 )
-                line = f"- [{confidence}] {f.subject} {f.predicate} {f.object}"
+                line = (f"- [{confidence_tag}] "
+                        f"{f.subject} {f.predicate} {f.object} "
+                        f"(score={score:.2f})")
                 if used + len(line) > budget_chars * 0.65:
                     lines.append(f"  ... (+{len(facts) - facts.index(f)} more)")
                     break
                 lines.append(line)
                 used += len(line)
-
-        # === 因果鏈區（precise mode 跳過）===
         if chains and mode != "precise":
             header = "\n## Causal Chains"
             if used + len(header) < budget_chars:
                 lines.append(header)
                 used += len(header)
-
                 for chain in chains[:2]:
                     parts = [
                         f"{f.subject}→[{f.predicate}]→{f.object}"
@@ -234,18 +264,12 @@ class MemoryReader:
                         break
                     lines.append(line)
                     used += len(line)
-
         return "\n".join(lines)
 
-    # ── Fallback ──────────────────────────────────────────────
-
     def _fallback_recent(self, top_k: int, max_tokens: int) -> ContextResult:
-        """query 無有效關鍵詞時，回傳最近高 weight 的 facts"""
         facts = self.store.get_all_facts(min_weight=0.5)[:top_k]
         summary = self._build_summary(facts, [], max_tokens, "precise")
         return ContextResult(
-            facts=facts,
-            chains=[],
-            summary=summary,
+            facts=facts, chains=[], summary=summary,
             token_estimate=len(summary) // CHARS_PER_TOKEN,
         )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Literal, Optional
@@ -9,10 +10,11 @@ from .models import Fact
 
 DecayAction = Literal["decay", "prune", "merge", "conflict_flag"]
 
+DECAY_FLOOR = 0.08   # 記憶最低保留值，防止集體失憶
+ANCHOR_DECAY_FLOOR = 0.5  # anchor 有更高的 floor
 
 @dataclass
 class EvolutionEvent:
-    """演化操作日誌單筆記錄"""
     action: str
     fact_id: str
     target_id: Optional[str]
@@ -46,7 +48,7 @@ _CONFLICT_PREDICATES: list[frozenset[str]] = [
 
 
 class MemoryEvolution:
-    """Self-Correction Loop v5：anchor lock + merge edge contradiction"""
+    """Self-Correction Loop v6: decay floor + merge lineage + adaptive threshold"""
 
     PRUNE_THRESHOLD  = 0.05
     CONFLICT_PENALTY = 0.3
@@ -101,6 +103,10 @@ class MemoryEvolution:
             extra_days = max(0, age_days - age_days_threshold)
             effective_rate = min(0.5, rate * (1 + extra_days / 30))
             new_weight = fact.weight * (1.0 - effective_rate)
+
+            # DECAY_FLOOR 保護
+            if new_weight < DECAY_FLOOR:
+                new_weight = DECAY_FLOOR
 
             if dry_run:
                 stats["decayed"] += 1
@@ -173,6 +179,11 @@ class MemoryEvolution:
             return False
         rate = delta if delta is not None else _DECAY_RATES.get(fact.source, 0.05)
         new_weight = max(0.0, fact.weight - rate)
+        # DECAY_FLOOR 保護
+        if fact.is_anchor:
+            new_weight = max(ANCHOR_DECAY_FLOOR, new_weight)
+        else:
+            new_weight = max(DECAY_FLOOR, new_weight)
         if new_weight < self.PRUNE_THRESHOLD:
             return self._prune(fact_id, reason=f"{reason}→below_threshold")
         ok = self.store.update_weight(fact_id, new_weight)
@@ -205,7 +216,7 @@ class MemoryEvolution:
             self._conflict_flag(source_id, reason=f"merge_rejected_conflict→{reason}")
             return False
 
-        # E-2：合併後檢查新節點上的關係邊是否有衝突
+        # Post-merge edge 衝突檢查
         post_merge_facts = self.store.search_by_entity(target.subject)
         for existing in post_merge_facts:
             if existing.fact_id in (source_id, target_id):
@@ -225,8 +236,22 @@ class MemoryEvolution:
                     reason="MEMORY_CONFLICT_RESOLVED",
                 ))
 
-        merged_weight = min(1.0, target.weight + source.weight * 0.5)
+        merged_weight = min(2.0, target.weight + source.weight * 0.5)
         self.store.update_weight(target_id, merged_weight)
+
+        # E-2: Lineage tracking
+        existing_lineage = target.merged_from or []
+        new_lineage = existing_lineage + [source_id]
+        conn = self.store._get_conn()
+        conn.execute(
+            "UPDATE facts SET merge_reason = ? WHERE fact_id = ?",
+            (json.dumps({
+                "merged_from": new_lineage,
+                "reason": reason,
+            }), target_id),
+        )
+        conn.commit()
+
         self._record(EvolutionEvent("merge", source_id, target_id,
                                     source.weight, 0.0, reason=reason))
         return self._prune(source_id, reason=f"merged_into:{target_id[:8]}")

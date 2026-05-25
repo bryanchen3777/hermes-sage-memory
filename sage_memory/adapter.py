@@ -1,6 +1,6 @@
 """
-SAGELiteProvider — 實作 Hermes MemoryProvider ABC v7
-升級：boost_tags、post_reply_commit 非同步、event_time/is_anchor 支援
+SAGELiteProvider — 實作 Hermes MemoryProvider ABC v8
+升級：on_memory_retrieved hook、write health、confidence/sigmoid 正規化
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ except ImportError:
 
 
 class SAGELiteProvider(MemoryProvider):
-    """Hermes-compatible SAGE-lite Memory Provider v7"""
+    """Hermes-compatible SAGE-lite Memory Provider v8"""
 
     PROVIDER_NAME = "sage_lite"
 
@@ -53,6 +53,7 @@ class SAGELiteProvider(MemoryProvider):
         self._turn_count: int = 0
         self._compressor = SummaryCompressor()
         self._cache = PrefetchCache(ttl_seconds=30.0, max_size=50)
+        self._write_failures: list[dict] = []
 
     # ── 必填 ABC ─────────────────────────────────────────────
 
@@ -212,10 +213,6 @@ class SAGELiteProvider(MemoryProvider):
         last_user_msg: str,
         agent_reply: str,
     ) -> None:
-        """
-        非同步 post-turn 寫入，完全不阻塞主對話 I/O。
-        由 Event Bus 在 AGENT_SPEAK 後呼叫。
-        """
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None,
@@ -322,8 +319,17 @@ class SAGELiteProvider(MemoryProvider):
                 session_id=self._session_id,
                 source="user",
             )
-            fact_id = self._writer.add_fact(fact)
-            return json.dumps({"status": "ok", "fact_id": fact_id})
+            result = self._writer.write_with_confirmation(fact)
+            if result.has_failures:
+                self._write_failures.append({
+                    "fact": fact.to_dict(),
+                    "errors": result.rejected,
+                })
+            fact_id = result.written[0] if result.written else (
+                result.merged[0] if result.merged else ""
+            )
+            return json.dumps({"status": "ok" if fact_id else "error",
+                               "fact_id": fact_id})
 
         elif tool_name == "sage_correct":
             ok = self._evolution.apply_correction(
@@ -366,6 +372,31 @@ class SAGELiteProvider(MemoryProvider):
         if self._store:
             self._store.close()
         self._store     = GraphStore(db_path=self._db_path())
-        self._writer    = MemoryWriter(self._store, default_session_id=self._session_id)
-        self._reader    = MemoryReader(self._store)
+        self._writer    = MemoryWriter(
+            self._store, default_session_id=self._session_id
+        )
+        self._reader    = MemoryReader(
+            self._store,
+            on_retrieved=self._on_memory_retrieved,
+        )
         self._evolution = MemoryEvolution(self._store)
+
+    def _on_memory_retrieved(self, result: ContextResult) -> None:
+        """
+        Post-retrieval hook: 低分 facts 自動輕微 decay。
+        """
+        for fact in result.facts:
+            score = result.retrieval_scores.get(fact.fact_id, 0.0)
+            if score < 0.2 and not fact.is_anchor:
+                self._evolution.apply_correction(
+                    fact.fact_id, "decay",
+                    delta=0.02,
+                    reason="low_retrieval_score",
+                )
+
+    def get_write_health(self) -> dict:
+        return {
+            "total_write_failures": len(self._write_failures),
+            "recent_failures": self._write_failures[-5:],
+            "store_stats": self._store.stats() if self._store else {},
+        }
