@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermes-sage-memory"
+version = "0.1.0"
+description = "SAGE-lite causal graph memory plugin for Hermes Agent"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Chung Cheng Chen" }]
+keywords = [
+    "hermes", "agent", "memory", "knowledge-graph",
+    "causal", "llm", "plugin"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "networkx>=3.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.urls]
+Homepage   = "https://github.com/NousResearch/hermes-agent"
+Repository = "https://github.com/bryanchen3777/hermes-sage-memory"
+Issues     = "https://github.com/bryanchen3777/hermes-sage-memory/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sage_memory", "integrations"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
