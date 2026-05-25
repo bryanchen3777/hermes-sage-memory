@@ -71,7 +71,7 @@ print(context)
 
 ## Architecture / 架構
 
-![SAGE Lite Architecture](SAGE Lite架構圖.png)
+![SAGE Lite Architecture](architecture.png)
 
 ```
 Hermes Agent
