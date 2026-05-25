@@ -12,37 +12,37 @@
 
 ---
 
-## Equipping AI with True Long-Term Memory / 給 AI 裝上真正的長期記憶
+## 給 AI 裝上真正的長期記憶 / Equipping AI with True Long-Term Memory
 
-**hermes-sage-memory** — The core goal of this project is to solve the most fundamental pain point of AI in long-term relationships: **no matter how long you chat, it still doesn't know you.**
+**hermes-sage-memory** — 這個項目的核心目的，是解決 AI 在長久相處時最根本的痛點：**聊再久，它還是不認識你。**
 
-### 1. In Plain Terms — What Is It? / 用大白話解釋它是什麼
+### 1. 用大白話解釋它是什麼 / In Plain Terms — What Is It?
 
-Imagine you hired an all-powerful secretary, brilliant in every subject, but with one fatal flaw: **their memory is like a goldfish**. After each conversation, as soon as it gets too long or too much time passes, they forget your habits, the important task you mentioned yesterday, even your most private moments. Every chat feels like the first meeting — you have to patiently re-introduce yourself again and again.
+想像你雇了一個全能的秘書，他精通天文地理，卻有一個致命缺點：**記憶像金魚**。每次聊完，只要對話太長，或隔了一段時間，他就會把你的生活習慣、昨天交代的重要事項、甚至你們最私密的心事忘得一乾二淨。每次聊天都像第一次見面，你必須不厭其煩地重新介紹自己。
 
-hermes-sage-memory installs a **real long-term brain** for this AI secretary. It doesn't just mechanically make AI "memorize more words" — instead, it distills conversations into structured memories, like a human brain. The longer you相处 (spend time together), the more it understands you.
+hermes-sage-memory 就是幫這個 AI 秘書**裝上真正的長期大腦**。它不是死板地讓 AI「背更多字」，而是讓它像人一樣，把對話提煉成有結構的記憶，隨著相處越久，它就越懂你。
 
-### 2. What Makes It Powerful? / 它有什麼厲害的地方？
+### 2. 它有什麼厲害的地方？/ What Makes It Powerful?
 
-**True Long + Short Term Memory:** Won't forget just because a conversation got too long. Important facts (e.g., you prefer unsweetened black coffee, you're working on a critical project, a promise you made) are automatically distilled, stored in layers, and instantly recalled when the context is right.
+**真正的長短期記憶：** 不會因為對話太長就忘記前面。重要的事情（例如：你喜歡喝不加糖的黑咖啡、你正在進行的重要專案、你說過的承諾）會被自動提煉、分層儲存，情境對了就立刻召回。
 
-**Self-Evolving Memory:** Repeated occurrences get strengthened, long-untouched facts naturally fade, and conflicting memories automatically resolve themselves. It's not a dead database — it's alive, like a human brain.
+**記憶會自我演化：** 重複出現的事情會被強化、長期沒提到的會慢慢淡化、互相矛盾的記憶會自動解決衝突。它不是死的資料庫，而是像人類大腦一樣是「活的」。
 
-**Fully Personalized & Isolated:** Each AI character has its own independent memory graph. It remembers the exclusive memories **between you and it** — never mixing in data from anyone else.
+**完全個人化、完全隔離：** 每個 AI 角色擁有自己獨立的記憶圖譜。它記得的是「你和它之間」的專屬回憶，絕對不會混入其他人的資料。
 
-### 3. How Is It Different from Other Technologies? / 對比其他技術，它獨特在哪裡？
+### 3. 對比其他技術，它獨特在哪裡？/ How Is It Different from Other Technologies?
 
-Most technologies on the market just make AI a "slightly better database." What hermes-sage-memory aims to do: **make AI truly remember you as a person** — not just the words you said, but the relationship, preferences, and timeline between you.
+市面上多數技術只是讓 AI 變成「記性好一點的資料庫」。而 hermes-sage-memory 試圖做的是：**讓 AI 真正記得你這個人**——不只是你說過的字，而是你們之間的關係、偏好與時間軌跡。
 
-| Core Technology Comparison | General AI Chat (Sliding Window) | Traditional RAG (Keyword Search) | hermes-sage-memory |
+| 核心技術直觀對比 | 一般 AI 聊天 (滑動窗口) | 傳統 RAG (關鍵字搜尋) | hermes-sage-memory |
 |---|---|---|---|
-| **Memory Structure** | Only remembers recent exchanges | Searches keywords, retrieves rigid text fragments | Network knowledge graph (who, when, what they like) |
-| **Forgetting Mechanism** | Completely forgets when conversation gets long | Only remembers individual keywords, no context | Natural decay; important & repeated memories endure forever |
-| **Cross-Topic Association** | Completely incapable | Weak effectiveness | Powerful (can build A → B → C multi-hop causal chains) |
-| **Self-Correction** | Cannot self-correct errors | Cannot resolve conflicts | Conflicts auto-resolve; errors can be dynamically corrected |
-| **Personalization** | Resets with every new chat | Depends entirely on your search keywords | Dynamically deepens with相处 time & interaction depth |
+| **記憶結構** | 僅記得最近幾句話 | 搜尋關鍵字，撈出死板的文字片段 | 網狀關係圖譜（誰、在何時、喜歡什麼） |
+| **遺忘方式** | 對話一長就徹底忘記 | 只記得個別字眼，不記得前後關係 | 自然淡化，重要與重複的記憶永遠留著 |
+| **跨話題關聯** | 完全無能力 | 效果微弱 | 強大（可建立 A → B → C 的多跳因果鏈） |
+| **自我修正** | 無法自己修正錯誤 | 無法解決衝突 | 衝突自動解決、發現錯誤可動態糾正 |
+| **個人化程度** | 每次開新對話就重置 | 依賴你提問的字眼 | 隨相處時間與互動深淺，持續動態加深 |
 
-> 💡 **Current Status:** 110 automated tests passed, supporting 10 independent character profiles, zero external dependencies — seamlessly mountable on the Hermes Agent framework.
+> 💡 **項目現狀：** 已通過 110 個自動化測試，支援 10 個獨立角色 Profile，達到零外部依賴，可直接無縫掛載於 Hermes Agent 框架運行。
 
 ---
 
