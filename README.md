@@ -12,6 +12,40 @@
 
 ---
 
+## Equipping AI with True Long-Term Memory / 給 AI 裝上真正的長期記憶
+
+**hermes-sage-memory** — The core goal of this project is to solve the most fundamental pain point of AI in long-term relationships: **no matter how long you chat, it still doesn't know you.**
+
+### 1. In Plain Terms — What Is It? / 用大白話解釋它是什麼
+
+Imagine you hired an all-powerful secretary, brilliant in every subject, but with one fatal flaw: **their memory is like a goldfish**. After each conversation, as soon as it gets too long or too much time passes, they forget your habits, the important task you mentioned yesterday, even your most private moments. Every chat feels like the first meeting — you have to patiently re-introduce yourself again and again.
+
+hermes-sage-memory installs a **real long-term brain** for this AI secretary. It doesn't just mechanically make AI "memorize more words" — instead, it distills conversations into structured memories, like a human brain. The longer you相处 (spend time together), the more it understands you.
+
+### 2. What Makes It Powerful? / 它有什麼厲害的地方？
+
+**True Long + Short Term Memory:** Won't forget just because a conversation got too long. Important facts (e.g., you prefer unsweetened black coffee, you're working on a critical project, a promise you made) are automatically distilled, stored in layers, and instantly recalled when the context is right.
+
+**Self-Evolving Memory:** Repeated occurrences get strengthened, long-untouched facts naturally fade, and conflicting memories automatically resolve themselves. It's not a dead database — it's alive, like a human brain.
+
+**Fully Personalized & Isolated:** Each AI character has its own independent memory graph. It remembers the exclusive memories **between you and it** — never mixing in data from anyone else.
+
+### 3. How Is It Different from Other Technologies? / 對比其他技術，它獨特在哪裡？
+
+Most technologies on the market just make AI a "slightly better database." What hermes-sage-memory aims to do: **make AI truly remember you as a person** — not just the words you said, but the relationship, preferences, and timeline between you.
+
+| Core Technology Comparison | General AI Chat (Sliding Window) | Traditional RAG (Keyword Search) | hermes-sage-memory |
+|---|---|---|---|
+| **Memory Structure** | Only remembers recent exchanges | Searches keywords, retrieves rigid text fragments | Network knowledge graph (who, when, what they like) |
+| **Forgetting Mechanism** | Completely forgets when conversation gets long | Only remembers individual keywords, no context | Natural decay; important & repeated memories endure forever |
+| **Cross-Topic Association** | Completely incapable | Weak effectiveness | Powerful (can build A → B → C multi-hop causal chains) |
+| **Self-Correction** | Cannot self-correct errors | Cannot resolve conflicts | Conflicts auto-resolve; errors can be dynamically corrected |
+| **Personalization** | Resets with every new chat | Depends entirely on your search keywords | Dynamically deepens with相处 time & interaction depth |
+
+> 💡 **Current Status:** 110 automated tests passed, supporting 10 independent character profiles, zero external dependencies — seamlessly mountable on the Hermes Agent framework.
+
+---
+
 ## Why SAGE-lite? / 為什麼用 SAGE-lite？
 
 | | Hermes Built-in Memory<br>Hermes 內建記憶 | SAGE-lite |
