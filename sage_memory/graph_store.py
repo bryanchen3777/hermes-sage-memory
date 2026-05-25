@@ -433,3 +433,27 @@ class GraphStore:
     @property
     def edge_count(self) -> int:
         return self.graph.number_of_edges()
+
+    # ── Merge Lineage ─────────────────────────────────────────────
+
+    def update_merge_lineage(
+        self,
+        fact_id: str,
+        merged_from: list[str],
+        merge_reason: str,
+    ) -> bool:
+        """
+        更新 fact 的 merge lineage（封裝 _get_conn 直接操作）。
+        evolution._merge 應透過此方法寫入，不得直接操作 DB。
+        """
+        import json
+        conn = self._get_conn()
+        result = conn.execute(
+            "UPDATE facts SET merge_reason = ? WHERE fact_id = ?",
+            (json.dumps({
+                "merged_from": merged_from,
+                "reason": merge_reason,
+            }), fact_id),
+        )
+        conn.commit()
+        return result.rowcount > 0
