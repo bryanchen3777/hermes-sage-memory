@@ -1,46 +1,51 @@
 # hermes-sage-memory
 
-> A lightweight causal graph memory plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent).  
+> Causal graph memory plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 > Replace flat text memory with a self-evolving temporal knowledge graph — zero external dependencies.
+>
+> [Hermes Agent](https://github.com/NousResearch/hermes-agent) 的因果圖譜記憶外掛。
+> 將平面文字記憶替換為自我演化的时间知识图谱——无外部依赖。
 
-[![Tests](https://img.shields.io/badge/tests-75%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-110%20passed-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
 
 ---
 
-## Why SAGE-lite?
+## Why SAGE-lite? / 為什麼用 SAGE-lite？
 
-| | Hermes Built-in Memory | SAGE-lite |
+| | Hermes Built-in Memory<br>Hermes 內建記憶 | SAGE-lite |
 |---|---|---|
-| Structure | Flat text (MEMORY.md) | Causal graph (S→P→O) |
-| Retrieval | Keyword / vector snippet | Multi-hop causal traversal |
-| Self-correction | Manual rewrite | auto decay / prune / merge |
-| Cross-session search | Fragmented | Profile-isolated SQLite |
-| Context injection | Full text dump | Top-K compressed summary |
-| External deps | None | None (NetworkX + SQLite) |
+| Structure 結構 | Flat text (MEMORY.md) | Causal graph (S→P→O) 因果圖譜 |
+| Retrieval 檢索 | Keyword / vector snippet | Multi-hop causal traversal 多跳因果遍歷 |
+| Self-correction 自我修正 | Manual rewrite 手動改寫 | Auto decay/prune/merge 自動衰減/修剪/合併 |
+| Cross-session 跨 session | Fragmented 碎片化 | Profile-isolated SQLite 隔離存儲 |
+| Context injection 上下文注入 | Full text dump 全文傾倒 | Top-K compressed summary 精選壓縮摘要 |
+| External deps 外部依賴 | None | None (NetworkX + SQLite) |
 
 ---
 
-## Quick Start
+## Quick Start / 快速開始
 
-### Install
+### Install / 安裝
 
 ```bash
 pip install hermes-sage-memory
 ```
 
-### Use as Hermes Plugin
+### Use as Hermes Plugin / 做為 Hermes 外掛使用
 
 ```bash
 # Copy plugin entry to Hermes plugins directory
+# 將外掛複製到 Hermes plugins 目錄
 cp -r plugins/memory/sage_lite /path/to/hermes-agent/plugins/memory/
 
 # Launch Hermes with SAGE-lite memory
+# 以 SAGE-lite 記憶啟動 Hermes
 hermes --memory-provider sage_lite
 ```
 
-### Standalone Usage
+### Standalone Usage / 獨立使用
 
 ```python
 from sage_memory import SAGELiteProvider
@@ -48,14 +53,14 @@ from sage_memory import SAGELiteProvider
 provider = SAGELiteProvider(top_k=5, max_hops=2, max_tokens=800)
 provider.initialize("my-session", hermes_home="~/.hermes")
 
-# Write a conversation turn
+# Write a conversation turn / 寫入對話輪次
 provider.sync_turn(
     user_content="I love hiking and I live in Queens, New York.",
     assistant_content="Got it, I'll remember that.",
     session_id="my-session",
 )
 
-# Retrieve relevant context
+# Retrieve relevant context / 檢索相關上下文
 context = provider.prefetch("What do I enjoy?", session_id="my-session")
 print(context)
 # Memory
@@ -64,7 +69,9 @@ print(context)
 
 ---
 
-## Architecture
+## Architecture / 架構
+
+![SAGE Lite Architecture](SAGE Lite架構圖.png)
 
 ```
 Hermes Agent
@@ -99,37 +106,37 @@ Hermes Agent
 
 ---
 
-## Memory Lifecycle
+## Memory Lifecycle / 記憶生命週期
 
-1. **Write** — `sync_turn()` extracts triples from each conversation turn via pattern matching
-2. **Retrieve** — `prefetch()` scores facts by `weight × recency × relevance`, returns compressed summary
-3. **Evolve** — scheduled decay ages old facts; `apply_correction()` handles user feedback
-4. **Persist** — WAL-mode SQLite with batch commits; export/import via JSON Lines
+1. **Write 寫入** — `sync_turn()` extracts triples via pattern matching 透過模式匹配提取三元組
+2. **Retrieve 檢索** — `prefetch()` scores by `weight × recency × relevance`，returns compressed summary 回傳壓縮摘要
+3. **Evolve 演化** — scheduled decay ages old facts; `apply_correction()` handles user feedback 排程衰減舊事實；處理用戶反饋
+4. **Persist 持久化** — WAL-mode SQLite with batch commits; JSON Lines export/import WAL 模式 SQLite 批量提交；JSON Lines 匯出入
 
 ---
 
-## Recall Modes
+## Recall Modes / 檢索模式
 
-| Mode | Facts | Chains | Token Use | Best For |
+| Mode 模式 | Facts 事實 | Chains 鏈 | Token Use | Best For 適用場景 |
 |---|---|---|---|---|
-| `precise` | top 3 | none | minimal | Quick factual queries |
-| `balanced` | top 5 | top 2 | moderate | Default general use |
-| `expansive` | top 10 | top 3 | higher | Deep reasoning tasks |
+| `precise` | top 3 | none | minimal 最小 | Quick factual queries 快速事實查詢 |
+| `balanced` | top 5 | top 2 | moderate 適中 | Default general use 預設通用場景 |
+| `expansive` | top 10 | top 3 | higher 較高 | Deep reasoning tasks 深度推理任務 |
 
 ---
 
-## Tools Exposed to Hermes
+## Tools Exposed to Hermes / 暴露給 Hermes 的工具
 
-| Tool | Description |
+| Tool 工具 | Description 說明 |
 |---|---|
-| `sage_add_fact` | Manually add a structured fact |
-| `sage_correct` | Decay / prune / merge a fact |
-| `sage_recall` | Trigger manual recall with mode selection |
-| `sage_stats` | Return graph health statistics |
+| `sage_add_fact` | Manually add a structured fact 手動新增結構化事實 |
+| `sage_correct` | Decay / prune / merge a fact 衰減/修剪/合併事實 |
+| `sage_recall` | Trigger manual recall with mode selection 手動觸發檢索 |
+| `sage_stats` | Return graph health statistics 回傳圖譜健康統計 |
 
 ---
 
-## Project Structure
+## Project Structure / 專案結構
 
 ```
 hermes-sage-memory/
@@ -146,31 +153,33 @@ hermes-sage-memory/
 ├── plugins/
 │   └── memory/sage_lite/
 │       └── __init__.py
-├── tests/                  # 75 tests, 0 external dependencies
-├── examples/
+├── tests/                  # 110 tests, 0 external dependencies 無外部依賴
 ├── docs/
+├── examples/
+├── SAGE Lite架構圖.png    # Architecture diagram 架構圖
 ├── README.md
 └── pyproject.toml
 ```
 
 ---
 
-## Configuration
+## Configuration / 設定
 
 ```python
 provider = SAGELiteProvider(
-    top_k=5,           # Facts retrieved per query
-    max_hops=2,        # Graph traversal depth
-    max_tokens=800,    # Context injection budget
+    top_k=5,           # Facts retrieved per query 每查詢檢索的事實數
+    max_hops=2,        # Graph traversal depth 圖譜遍歷深度
+    max_tokens=800,    # Context injection budget 上下文注入預算
     recall_mode="balanced",  # precise / balanced / expansive
 )
 ```
 
-Or via Hermes config UI — SAGE-lite exposes `get_config_schema()` for interactive setup.
+Or via Hermes config UI — SAGE-lite exposes `get_config_schema()` for interactive setup.  
+或透過 Hermes 設定 UI——SAGE-lite 暴露 `get_config_schema()` 供互動式設定。
 
 ---
 
-## Running Tests
+## Running Tests / 執行測試
 
 ```bash
 pip install -e ".[dev]"
@@ -179,13 +188,13 @@ pytest tests/ -v
 
 ---
 
-## Roadmap
+## Roadmap / 發展藍圖
 
-- [ ] Async prefetch (background graph traversal)
-- [ ] LLM-assisted triple extraction (optional, pluggable)
-- [ ] Neo4j backend adapter
-- [ ] Distributed graph store for multi-agent setups
-- [ ] Web UI for memory graph visualization
+- [ ] Async prefetch (background graph traversal) 異步預取（背景圖譜遍歷）
+- [ ] LLM-assisted triple extraction (optional, pluggable) LLM 輔助三元組抽取（可選插拔）
+- [ ] Neo4j backend adapter Neo4j 後端適配器
+- [ ] Distributed graph store for multi-agent setups 多代理分散式圖譜存儲
+- [ ] Web UI for memory graph visualization 記憶圖譜視覺化 Web UI
 
 ---
 
