@@ -31,6 +31,7 @@ class MemoryReader:
         max_tokens: int = MAX_TOKENS_DEFAULT,
         min_weight: float = 0.1,
         mode: RecallMode = "balanced",
+        boost_tags: Optional[list[str]] = None,
     ) -> ContextResult:
         """
         主要檢索入口，對應 Hermes prefetch() hook。

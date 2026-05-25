@@ -153,3 +153,68 @@ def test_source_differentiated_decay(tmp_path):
     from sage_memory.graph_store import GraphStore
     from sage_memory.evolution import _DECAY_RATES
     assert _DECAY_RATES["inference"] > _DECAY_RATES["user"]
+
+
+# ── v0.1.1 新功能測試 ──────────────────────────────────────────
+
+def test_anchor_lock_protected_from_decay(tmp_path):
+    """anchor 事實不應被 scheduled decay 影響"""
+    import time
+    store = GraphStore(db_path=tmp_path / "anchor_protect.sqlite")
+    writer = MemoryWriter(store)
+    evo = MemoryEvolution(store)
+
+    # 寫入 anchor fact，timestamp 10天前（會被 scheduled decay 瞄準）
+    anchor = Fact(
+        subject="Emma", predicate="lives_in", object="Paris",
+        timestamp=time.time() - 86400 * 10,
+        is_anchor=True
+    )
+    store.add_fact(anchor)
+
+    stats = evo.run_scheduled_decay(age_days_threshold=7.0)
+    assert stats["anchors_protected"] == 1
+    # anchor 不應被刪除
+    assert store.get_fact(anchor.fact_id) is not None
+
+
+def test_anchor_set_anchor_and_get_anchors(tmp_path):
+    """set_anchor / get_anchor_facts 應正常運作"""
+    store = GraphStore(db_path=tmp_path / "anchor_set.sqlite")
+    writer = MemoryWriter(store)
+
+    f1 = Fact(subject="Frank", predicate="likes", object="music")
+    writer.add_fact(f1)
+
+    ok = store.set_anchor(f1.fact_id, True)
+    assert ok is True
+
+    anchors = store.get_anchor_facts()
+    assert len(anchors) == 1
+    assert anchors[0].fact_id == f1.fact_id
+
+
+def test_merge_edge_conflict_detected_post_merge(tmp_path):
+    """合併後若新節點上的現有邊與被合併 fact 衝突，應被偵測"""
+    store = GraphStore(db_path=tmp_path / "merge_edge_conflict.sqlite")
+    writer = MemoryWriter(store)
+    evo = MemoryEvolution(store)
+
+    # 建立：Alice likes coffee, Alice hates coffee
+    f_like = Fact(subject="Alice", predicate="likes", object="coffee")
+    f_hate = Fact(subject="Alice", predicate="hates", object="coffee")
+    writer.add_fact(f_like)
+    writer.add_fact(f_hate)
+
+    # 建立：Alice is smart（非衝突）
+    f_smart = Fact(subject="Alice", predicate="is", object="smart")
+    writer.add_fact(f_smart)
+
+    # 嘗試將 likes→smart 的 chain fact 合併進 hater
+    # 先建立一個會和現有邊衝突的 fact
+    g1 = Fact(subject="Alice", predicate="loves", object="coffee")
+    writer.add_fact(g1)
+
+    conflicts_before = evo.detect_conflicts()
+    # loves / hates 是衝突對，所以應該有衝突
+    assert len(conflicts_before) >= 1

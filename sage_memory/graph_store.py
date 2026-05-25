@@ -13,7 +13,7 @@ from .models import Fact
 
 # 每累積 N 次寫入才 commit（WAL 模式下安全）
 _BATCH_SIZE = 20
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 class GraphStore:
@@ -107,17 +107,40 @@ class GraphStore:
             )
 
         if from_version < 2:
-            # v2：新增 tags 欄位、session_id 索引
             try:
                 conn.execute(
                     "ALTER TABLE facts ADD COLUMN tags TEXT NOT NULL DEFAULT ''"
                 )
             except sqlite3.OperationalError:
-                pass  # 欄位已存在（重跑 migration 時）
+                pass
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_session "
                 "ON facts(session_id)"
             )
+
+        if from_version < 3:
+            try:
+                conn.execute(
+                    "ALTER TABLE facts ADD COLUMN event_time REAL"
+                )
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute(
+                    "ALTER TABLE facts ADD COLUMN is_anchor INTEGER NOT NULL DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_anchor ON facts(is_anchor)"
+            )
+
+    def _row_to_fact(self, row: sqlite3.Row) -> Fact:
+        d = dict(row)
+        d.pop("tags", None)
+        d["is_anchor"] = bool(d.get("is_anchor", 0))
+        d.setdefault("event_time", None)
+        return Fact(**d)
 
     def _load_from_db(self) -> None:
         conn = self._get_conn()
@@ -125,9 +148,7 @@ class GraphStore:
             "SELECT * FROM facts WHERE weight > 0.01"
         ).fetchall()
         for row in rows:
-            d = dict(row)
-            d.pop("tags", None)   # tags 欄位不在 Fact dataclass 中
-            fact = Fact(**d)
+            fact = self._row_to_fact(row)
             self._add_to_graph(fact)
 
     # ── Graph 操作 ────────────────────────────────────────────
@@ -140,10 +161,12 @@ class GraphStore:
             key=fact.fact_id,
             predicate=fact.predicate,
             timestamp=fact.timestamp,
+            event_time=fact.event_time,
             weight=fact.weight,
             source=fact.source,
             session_id=fact.session_id,
             fact_id=fact.fact_id,
+            is_anchor=fact.is_anchor,
         )
 
     def add_fact(self, fact: Fact) -> str:
@@ -152,10 +175,12 @@ class GraphStore:
         conn.execute(
             """INSERT OR REPLACE INTO facts
                (fact_id, subject, predicate, object,
-                timestamp, weight, source, session_id, tags)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                timestamp, event_time, weight, source,
+                session_id, tags, is_anchor)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (fact.fact_id, fact.subject, fact.predicate, fact.object,
-             fact.timestamp, fact.weight, fact.source, fact.session_id, ""),
+             fact.timestamp, fact.event_time, fact.weight, fact.source,
+             fact.session_id, "", int(fact.is_anchor)),
         )
         self._pending_writes += 1
         if self._pending_writes >= self.batch_size:
@@ -170,9 +195,7 @@ class GraphStore:
         ).fetchone()
         if not row:
             return None
-        d = dict(row)
-        d.pop("tags", None)
-        return Fact(**d)
+        return self._row_to_fact(row)
 
     def update_weight(self, fact_id: str, new_weight: float) -> bool:
         found = False
@@ -220,12 +243,7 @@ class GraphStore:
             "SELECT * FROM facts WHERE weight >= ? ORDER BY timestamp DESC",
             (min_weight,),
         ).fetchall()
-        result = []
-        for r in rows:
-            d = dict(r)
-            d.pop("tags", None)
-            result.append(Fact(**d))
-        return result
+        return [self._row_to_fact(r) for r in rows]
 
     def search_by_entity(
         self, entity: str, min_weight: float = 0.1
@@ -238,12 +256,54 @@ class GraphStore:
                ORDER BY weight DESC, timestamp DESC""",
             (f"%{entity}%", f"%{entity}%", f"%{entity}%", min_weight),
         ).fetchall()
-        result = []
-        for r in rows:
-            d = dict(r)
-            d.pop("tags", None)
-            result.append(Fact(**d))
-        return result
+        return [self._row_to_fact(r) for r in rows]
+
+    # ── Entity Fuzzy Matching ─────────────────────────────────
+
+    def find_similar_entity(self, name: str, threshold: float = 0.75) -> Optional[str]:
+        """
+        在既存節點中尋找語意相近的實體名稱。
+        使用字元 overlap ratio（無需 NLP），防止圖碎片化。
+        """
+        name_lower = name.lower().strip()
+        best_match: Optional[str] = None
+        best_score = 0.0
+
+        for node in self.graph.nodes():
+            node_lower = str(node).lower().strip()
+            s1, s2 = set(name_lower), set(node_lower)
+            if not s1 or not s2:
+                continue
+            score = len(s1 & s2) / len(s1 | s2)
+            if score >= threshold and score > best_score:
+                best_score = score
+                best_match = node
+
+        return best_match
+
+    # ── Anchor Management ────────────────────────────────────
+
+    def set_anchor(self, fact_id: str, is_anchor: bool = True) -> bool:
+        """設定或解除基石記憶保護"""
+        for u, v, k, data in self.graph.edges(keys=True, data=True):
+            if data.get("fact_id") == fact_id:
+                self.graph[u][v][k]["is_anchor"] = is_anchor
+                conn = self._get_conn()
+                conn.execute(
+                    "UPDATE facts SET is_anchor = ? WHERE fact_id = ?",
+                    (int(is_anchor), fact_id),
+                )
+                conn.commit()
+                return True
+        return False
+
+    def get_anchor_facts(self) -> list[Fact]:
+        """取得所有基石記憶"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM facts WHERE is_anchor = 1"
+        ).fetchall()
+        return [self._row_to_fact(r) for r in rows]
 
     # ── 統計 ──────────────────────────────────────────────────
 
@@ -293,11 +353,6 @@ class GraphStore:
         overwrite: bool = False,
         min_weight: float = 0.05,
     ) -> dict[str, int]:
-        """
-        從 JSON Lines 匯入 facts。
-        overwrite=True：清空現有資料再匯入
-        回傳：{"imported": n, "skipped": n}
-        """
         if not path.exists():
             return {"imported": 0, "skipped": 0}
 

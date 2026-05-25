@@ -29,14 +29,12 @@ class EvolutionEvent:
         )
 
 
-# 依 source 差異化的衰減率
 _DECAY_RATES: dict[str, float] = {
-    "user":        0.03,   # 用戶親口說的衰減慢
-    "inference":   0.08,   # 推斷的衰減快
-    "correction":  0.02,   # 已修正的保留久
+    "user":        0.03,
+    "inference":   0.08,
+    "correction":  0.02,
 }
 
-# 矛盾謂詞對（互斥關係）
 _CONFLICT_PREDICATES: list[frozenset[str]] = [
     frozenset({"likes",    "hates"}),
     frozenset({"likes",    "dislikes"}),
@@ -48,10 +46,10 @@ _CONFLICT_PREDICATES: list[frozenset[str]] = [
 
 
 class MemoryEvolution:
-    """Self-Correction Loop v4：動態衰減 + 衝突偵測 + 演化日誌"""
+    """Self-Correction Loop v5：anchor lock + merge edge contradiction"""
 
     PRUNE_THRESHOLD  = 0.05
-    CONFLICT_PENALTY = 0.3   # 矛盾事實的 weight 懲罰
+    CONFLICT_PENALTY = 0.3
 
     def __init__(self, graph_store: GraphStore):
         self.store = graph_store
@@ -67,14 +65,6 @@ class MemoryEvolution:
         delta: Optional[float] = None,
         reason: str = "manual",
     ) -> bool:
-        """
-        對應 Hermes feedback_correction hook。
-        action:
-          decay        → 降低 weight（delta 可覆寫預設衰減率）
-          prune        → 直接刪除
-          merge        → 合併到 target_id（語意相容性檢查）
-          conflict_flag→ 標記矛盾並降權
-        """
         if action == "decay":
             return self._decay(fact_id, delta, reason)
         elif action == "prune":
@@ -91,24 +81,23 @@ class MemoryEvolution:
         dry_run: bool = False,
     ) -> dict[str, int]:
         """
-        定期排程執行：
-        - 對超過 age_days_threshold 天的 facts 依 source 差異化衰減
-        - weight 低於 PRUNE_THRESHOLD 自動剪除
-        - dry_run=True 只回報不執行
-
-        回傳：{"decayed": n, "pruned": n, "skipped": n}
+        定期排程執行 decay/prune，anchor facts 不受影響。
+        回傳：{"decayed": n, "pruned": n, "skipped": n, "anchors_protected": n}
         """
         now = time.time()
-        stats = {"decayed": 0, "pruned": 0, "skipped": 0}
+        stats = {"decayed": 0, "pruned": 0, "skipped": 0, "anchors_protected": 0}
 
         for fact in self.store.get_all_facts(min_weight=0.0):
+            if fact.is_anchor:
+                stats["anchors_protected"] += 1
+                continue
+
             age_days = (now - fact.timestamp) / 86400
             if age_days <= age_days_threshold:
                 stats["skipped"] += 1
                 continue
 
             rate = _DECAY_RATES.get(fact.source, 0.05)
-            # 每超過一天額外衰減一次（補償長時間未運行）
             extra_days = max(0, age_days - age_days_threshold)
             effective_rate = min(0.5, rate * (1 + extra_days / 30))
             new_weight = fact.weight * (1.0 - effective_rate)
@@ -135,14 +124,9 @@ class MemoryEvolution:
         return stats
 
     def detect_conflicts(self) -> list[tuple[Fact, Fact]]:
-        """
-        掃描全圖，找出所有矛盾事實對（相同 subject，互斥 predicate）。
-        回傳 list of (fact_a, fact_b) 供外部決策。
-        """
         conflicts: list[tuple[Fact, Fact]] = []
         all_facts = self.store.get_all_facts(min_weight=self.PRUNE_THRESHOLD)
 
-        # 按 subject 分組
         by_subject: dict[str, list[Fact]] = {}
         for f in all_facts:
             by_subject.setdefault(f.subject.lower(), []).append(f)
@@ -156,11 +140,6 @@ class MemoryEvolution:
         return conflicts
 
     def auto_resolve_conflicts(self) -> int:
-        """
-        自動解決衝突：
-        - 保留 weight 較高的，降權 weight 較低的
-        - 回傳處理的衝突對數
-        """
         resolved = 0
         for fa, fb in self.detect_conflicts():
             loser = fa if fa.weight <= fb.weight else fb
@@ -222,11 +201,29 @@ class MemoryEvolution:
         if not source or not target:
             return False
 
-        # 語意相容性檢查：矛盾謂詞不允許合併
         if self._are_conflicting(source, target):
-            # 改為 conflict_flag 而非合併
             self._conflict_flag(source_id, reason=f"merge_rejected_conflict→{reason}")
             return False
+
+        # E-2：合併後檢查新節點上的關係邊是否有衝突
+        post_merge_facts = self.store.search_by_entity(target.subject)
+        for existing in post_merge_facts:
+            if existing.fact_id in (source_id, target_id):
+                continue
+            if self._are_conflicting(existing, source):
+                loser = existing if existing.weight <= source.weight else source
+                self._conflict_flag(
+                    loser.fact_id,
+                    reason=f"post_merge_edge_conflict:{target_id[:8]}"
+                )
+                self._record(EvolutionEvent(
+                    action="conflict_flag",
+                    fact_id=loser.fact_id,
+                    target_id=target_id,
+                    old_weight=loser.weight,
+                    new_weight=max(0.0, loser.weight - self.CONFLICT_PENALTY),
+                    reason="MEMORY_CONFLICT_RESOLVED",
+                ))
 
         merged_weight = min(1.0, target.weight + source.weight * 0.5)
         self.store.update_weight(target_id, merged_weight)
@@ -248,7 +245,6 @@ class MemoryEvolution:
         return ok
 
     def _are_conflicting(self, fa: Fact, fb: Fact) -> bool:
-        """判斷兩條 fact 是否語意矛盾"""
         if fa.subject.lower() != fb.subject.lower():
             return False
         pair = frozenset({fa.predicate, fb.predicate})
@@ -256,6 +252,5 @@ class MemoryEvolution:
 
     def _record(self, event: EvolutionEvent) -> None:
         self._log.append(event)
-        # 日誌上限 1000 條（避免無限增長）
         if len(self._log) > 1000:
             self._log = self._log[-800:]

@@ -1,5 +1,6 @@
 import re
 import time
+import datetime
 from typing import Optional
 from .models import Fact
 from .graph_store import GraphStore
@@ -54,6 +55,16 @@ _RELATION_PATTERNS: list[tuple[str, str, float]] = [
     (r"(.+?)覺得(.+)",   "覺得",  0.8),
 ]
 
+# 時間詞解析（簡易版，無需 dateparser）
+_DATE_PATTERNS = [
+    (r"(\d{1,2})[月/\-](\d{1,2})[日號]?", "month_day"),
+    (r"(\d{4})[年/\-](\d{1,2})[月/\-](\d{1,2})", "full_date"),
+    (r"明天|tomorrow",   "tomorrow"),
+    (r"後天",             "day_after_tomorrow"),
+    (r"下週|next week",   "next_week"),
+    (r"下個月|next month","next_month"),
+]
+
 # 停用的 object 片段（過於模糊，不值得存）
 _NOISE_OBJECTS = {
     "it", "this", "that", "things", "something", "anything",
@@ -65,23 +76,32 @@ _FIRST_PERSON = {"i", "me", "my", "myself", "i'm", "i've", "i'd"}
 
 
 class MemoryWriter:
-    """Writer v2：擴展 pattern + 實體正規化 + 近似重複偵測"""
+    """Writer v3：entity 對齊 + event_time 解析 + anchor auto-set"""
 
     def __init__(self, graph_store: GraphStore, default_session_id: str = ""):
         self.store = graph_store
         self.default_session_id = default_session_id
 
-    # ── 公開 API（維持 Phase 1 相同簽名）────────────────────────
+    # ── 公開 API ──────────────────────────────────────────────
 
     def add_fact(self, fact: Fact) -> str:
         if not fact.session_id:
             fact.session_id = self.default_session_id
-        # 近似重複偵測：同 subject+predicate 的舊 fact 進行 weight 疊加而非新增
+
+        # W-1：entity 對齊（零依賴版）
+        fact.subject = self._align_entity(fact.subject)
+        fact.object  = self._align_entity(fact.object)
+
+        # 重複偵測
         existing = self._find_similar(fact)
         if existing:
-            merged_weight = min(1.0, existing.weight + fact.weight * 0.3)
-            self.store.update_weight(existing.fact_id, merged_weight)
+            new_weight = min(1.0, existing.weight + fact.weight * 0.3)
+            if new_weight >= 1.8 and not existing.is_anchor:
+                self.store.set_anchor(existing.fact_id, True)
+            else:
+                self.store.update_weight(existing.fact_id, new_weight)
             return existing.fact_id
+
         return self.store.add_fact(fact)
 
     def add_facts_batch(self, facts: list[Fact]) -> list[str]:
@@ -105,7 +125,6 @@ class MemoryWriter:
         session_id: Optional[str] = None,
     ) -> list[str]:
         sid = session_id or self.default_session_id
-        # user 說的話 weight 較高（直接陳述），assistant 推斷 weight 較低
         user_ids = self.extract_and_write(
             user_content, subject_hint="user", session_id=sid, source="user"
         )
@@ -116,6 +135,44 @@ class MemoryWriter:
 
     # ── 內部方法 ──────────────────────────────────────────────
 
+    def _align_entity(self, name: str) -> str:
+        """若圖中有相似實體則對齊，防止碎片化"""
+        similar = self.store.find_similar_entity(name, threshold=0.75)
+        return similar if similar else name
+
+    def _extract_event_time(self, text: str) -> Optional[float]:
+        """從句子中嘗試解析事件時間，找不到回傳 None"""
+        now = time.time()
+        for pattern, tag in _DATE_PATTERNS:
+            if re.search(pattern, text, re.IGNORECASE):
+                if tag == "tomorrow":
+                    return now + 86400
+                elif tag == "day_after_tomorrow":
+                    return now + 86400 * 2
+                elif tag == "next_week":
+                    return now + 86400 * 7
+                elif tag == "next_month":
+                    return now + 86400 * 30
+                elif tag == "month_day":
+                    m = re.search(pattern, text)
+                    month, day = int(m.group(1)), int(m.group(2))
+                    try:
+                        t = datetime.datetime(
+                            datetime.datetime.now().year, month, day
+                        )
+                        return t.timestamp()
+                    except ValueError:
+                        pass
+                elif tag == "full_date":
+                    m = re.search(pattern, text)
+                    year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    try:
+                        t = datetime.datetime(year, month, day)
+                        return t.timestamp()
+                    except ValueError:
+                        pass
+        return None
+
     def _extract_facts(
         self,
         text: str,
@@ -124,9 +181,8 @@ class MemoryWriter:
         source: str,
     ) -> list[Fact]:
         facts: list[Fact] = []
-        seen: set[tuple[str, str, str]] = set()  # (subject, predicate, object) 去重
+        seen: set[tuple[str, str, str]] = set()
 
-        # 分句：支援標點、連接詞、換行
         sentences = re.split(
             r"[.!?。！？\n]+|(?:\s+(?:and|but|however|although|so|then)\s+)",
             text,
@@ -138,6 +194,8 @@ class MemoryWriter:
             if len(sentence) < 4:
                 continue
 
+            event_time = self._extract_event_time(sentence)
+
             for pattern, predicate, base_weight in _RELATION_PATTERNS:
                 m = re.search(pattern, sentence, re.IGNORECASE)
                 if not m:
@@ -146,11 +204,9 @@ class MemoryWriter:
                 subj_raw = m.group(1).strip()
                 obj_raw  = m.group(2).strip()
 
-                # 正規化
                 subj = self._normalize_entity(subj_raw, subject_hint)
                 obj  = self._normalize_object(obj_raw)
 
-                # 過濾無效片段
                 if not subj or not obj:
                     continue
                 if obj.lower() in _NOISE_OBJECTS:
@@ -163,7 +219,6 @@ class MemoryWriter:
                     continue
                 seen.add(key)
 
-                # source 影響初始 weight
                 weight = base_weight
                 if source == "inference":
                     weight *= 0.8
@@ -173,37 +228,30 @@ class MemoryWriter:
                     predicate=predicate,
                     object=obj,
                     timestamp=time.time(),
+                    event_time=event_time,
                     weight=weight,
                     source=source,
                     session_id=session_id,
                 ))
-                # 一句可以匹配多個 pattern（不 break）
 
         return facts
 
     def _normalize_entity(self, raw: str, subject_hint: Optional[str]) -> str:
         """正規化主語：第一人稱統一、去除冠詞、首字母大寫"""
         cleaned = raw.strip().lower()
-        # 第一人稱 → subject_hint（通常是 "user"）
         if cleaned in _FIRST_PERSON:
             return subject_hint or "user"
-        # 去除開頭冠詞
         cleaned = re.sub(r"^(the|a|an)\s+", "", cleaned)
-        # 首字母大寫
         return cleaned.capitalize() if cleaned else ""
 
     def _normalize_object(self, raw: str) -> str:
         """正規化受詞：去除尾部標點、冠詞"""
         cleaned = raw.strip()
-        cleaned = re.sub(r"[,.;:]+$", "", cleaned)  # 去除尾部標點
+        cleaned = re.sub(r"[,.;:]+$", "", cleaned)
         cleaned = re.sub(r"^(the|a|an)\s+", "", cleaned, flags=re.IGNORECASE)
         return cleaned.strip()
 
     def _find_similar(self, fact: Fact) -> Optional[Fact]:
-        """
-        檢查是否已有 subject+predicate 相同的 fact。
-        相同 → 合併 weight，不重複寫入。
-        """
         existing = self.store.search_by_entity(fact.subject, min_weight=0.01)
         for e in existing:
             if (e.subject.lower() == fact.subject.lower()

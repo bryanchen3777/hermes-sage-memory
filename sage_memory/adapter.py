@@ -1,9 +1,10 @@
 """
-SAGELiteProvider — 實作 Hermes MemoryProvider ABC v6
-升級：stats 注入、on_pre_compress、profile 隔離強化、工具回傳格式對齊
+SAGELiteProvider — 實作 Hermes MemoryProvider ABC v7
+升級：boost_tags、post_reply_commit 非同步、event_time/is_anchor 支援
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any, Optional
@@ -27,7 +28,7 @@ except ImportError:
 
 
 class SAGELiteProvider(MemoryProvider):
-    """Hermes-compatible SAGE-lite Memory Provider v6"""
+    """Hermes-compatible SAGE-lite Memory Provider v7"""
 
     PROVIDER_NAME = "sage_lite"
 
@@ -157,35 +158,35 @@ class SAGELiteProvider(MemoryProvider):
             f"profile: {self._profile_name}"
         )
 
-    def prefetch(self, query: str, *, session_id: str) -> str:
-        if not self._reader:
-            return ""
-
-        # 快取命中直接回傳
+    def prefetch(
+        self,
+        query: str,
+        *,
+        session_id: str,
+        boost_tags: Optional[list[str]] = None,
+    ) -> str:
         cached = self._cache.get(query)
         if cached is not None:
             return cached
 
-        result: ContextResult = self._reader.retrieve_context(
+        result = self._reader.retrieve_context(
             query,
             top_k=self.top_k,
             max_hops=self.max_hops,
             max_tokens=self.max_tokens,
             mode=self.recall_mode,
+            boost_tags=boost_tags,
         )
-
         if result.is_empty:
             return ""
 
-        # 用 SummaryCompressor 輸出高密度摘要
         budget = TokenBudget(self.max_tokens)
         summary = self._compressor.compress(result, budget)
-
         self._cache.set(query, summary)
         return summary
 
     def queue_prefetch(self, query: str, *, session_id: str) -> None:
-        pass  # 未來可改為 asyncio background task
+        pass
 
     def sync_turn(
         self,
@@ -200,12 +201,38 @@ class SAGELiteProvider(MemoryProvider):
             user_content, assistant_content, session_id=session_id
         )
         self._turn_count += 1
-        # 新事實寫入 → 快取失效
         self._cache.invalidate()
-        # 每 20 輪執行一次定期 decay + 衝突自動解決
         if self._turn_count % 20 == 0:
             self._evolution.run_scheduled_decay()
             self._evolution.auto_resolve_conflicts()
+
+    async def post_reply_commit(
+        self,
+        session_id: str,
+        last_user_msg: str,
+        agent_reply: str,
+    ) -> None:
+        """
+        非同步 post-turn 寫入，完全不阻塞主對話 I/O。
+        由 Event Bus 在 AGENT_SPEAK 後呼叫。
+        """
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            self._writer.write_turn,
+            last_user_msg,
+            agent_reply,
+            session_id,
+        )
+        self._cache.invalidate()
+
+        if self._turn_count % 20 == 0:
+            await loop.run_in_executor(
+                None, self._evolution.run_scheduled_decay
+            )
+            await loop.run_in_executor(
+                None, self._evolution.auto_resolve_conflicts
+            )
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         try:
@@ -216,7 +243,6 @@ class SAGELiteProvider(MemoryProvider):
     def on_memory_write(
         self, action: str, target: str, content: str, metadata: dict
     ) -> None:
-        """鏡像內建 memory 寫入到 graph"""
         if action in ("append", "write") and content and self._writer:
             self._writer.extract_and_write(
                 content,
@@ -226,10 +252,6 @@ class SAGELiteProvider(MemoryProvider):
             )
 
     def on_pre_compress(self, messages: list) -> str:
-        """
-        Hermes 壓縮上下文前呼叫。
-        回傳 SAGE-lite 的記憶摘要，讓壓縮器知道哪些已被圖記憶保存。
-        """
         if not self._store or self._store.edge_count == 0:
             return ""
         s = self._store.stats()
@@ -251,7 +273,6 @@ class SAGELiteProvider(MemoryProvider):
                 self._profile_name = new_profile
                 self._init_components()
                 return
-        # 同 profile，只需更新 session_id
         if self._writer:
             self._writer.default_session_id = new_session_id
 
@@ -260,7 +281,6 @@ class SAGELiteProvider(MemoryProvider):
             self._store.flush()
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        """每輪開始時 queue 背景 prefetch（目前同步，未來可 async）"""
         pass
 
     def shutdown(self) -> None:
@@ -270,26 +290,18 @@ class SAGELiteProvider(MemoryProvider):
 
     def get_config_schema(self) -> list[dict]:
         return [
-            {
-                "key": "top_k", "label": "Top-K results",
-                "type": "int", "default": 5,
-                "description": "Number of facts to retrieve per query",
-            },
-            {
-                "key": "max_hops", "label": "Max graph hops",
-                "type": "int", "default": 2,
-                "description": "Depth of causal chain traversal (1–4)",
-            },
-            {
-                "key": "max_tokens", "label": "Max context tokens",
-                "type": "int", "default": 800,
-                "description": "Token budget for injected memory context",
-            },
-            {
-                "key": "recall_mode", "label": "Recall mode",
-                "type": "str", "default": "balanced",
-                "description": "precise / balanced / expansive",
-            },
+            {"key": "top_k", "label": "Top-K results",
+             "type": "int", "default": 5,
+             "description": "Number of facts to retrieve per query"},
+            {"key": "max_hops", "label": "Max graph hops",
+             "type": "int", "default": 2,
+             "description": "Depth of causal chain traversal (1–4)"},
+            {"key": "max_tokens", "label": "Max context tokens",
+             "type": "int", "default": 800,
+             "description": "Token budget for injected memory context"},
+            {"key": "recall_mode", "label": "Recall mode",
+             "type": "str", "default": "balanced",
+             "description": "precise / balanced / expansive"},
         ]
 
     def save_config(self, values: dict, hermes_home: str) -> None:

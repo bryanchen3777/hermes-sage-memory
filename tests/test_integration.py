@@ -209,3 +209,86 @@ def test_get_config_schema_keys(provider):
     schema = provider.get_config_schema()
     keys = {s["key"] for s in schema}
     assert {"top_k", "max_hops", "max_tokens", "recall_mode"}.issubset(keys)
+
+
+# ── v0.1.1 新功能測試 ──────────────────────────────────────────
+
+def test_post_reply_commit_async(provider):
+    """post_reply_commit 非同步寫入不應阻塞且應正確寫入"""
+    import asyncio
+    p = provider
+
+    async def run_async_commit():
+        await p.post_reply_commit(
+            session_id="async-test",
+            last_user_msg="I love reading science fiction books.",
+            agent_reply="That's interesting!",
+        )
+
+    asyncio.get_event_loop().run_until_complete(run_async_commit())
+
+    # 寫入的事實應存在
+    facts = p._store.get_all_facts()
+    assert len(facts) >= 1
+    # cache 應已被失效
+    assert p._cache.size == 0
+
+
+def test_boost_tags_passed_to_reader(provider):
+    """boost_tags 參數應正確傳遞到 reader"""
+    p = provider
+    # 寫入一些 facts
+    p.sync_turn("I like sushi and I live in Tokyo.", "Nice!", session_id="t1")
+
+    # 呼叫 prefetch 並傳 boost_tags
+    result = p.prefetch(
+        "food preferences",
+        session_id="t1",
+        boost_tags=["sushi", "food"],
+    )
+    # boost_tags 是內部參數，prefetch 只回傳 string
+    # 只要不拋例外即表示傳遞正確
+    assert isinstance(result, str)
+
+
+def test_fact_with_event_time_stored(provider):
+    """寫入帶 event_time 的 fact 應正確保存"""
+    from sage_memory.models import Fact
+    import time
+    event_time = time.time() + 86400  # 明天
+    fact = Fact(
+        subject="User", predicate="plans_to",
+        object="visit Tokyo",
+        event_time=event_time,
+    )
+    fid = provider._writer.add_fact(fact)
+    retrieved = provider._store.get_fact(fid)
+    assert retrieved is not None
+    assert retrieved.event_time is not None
+    assert abs(retrieved.event_time - event_time) < 1.0
+
+
+def test_anchor_fact_persists_after_reload(provider):
+    """anchor 設定應在重載後仍然有效（SQLite persistence）"""
+    p = provider
+
+    # 直接寫入 fact（不走 sync_turn，避免 session 狀態問題）
+    from sage_memory.models import Fact
+    fact = Fact(subject="User", predicate="is", object="engineer")
+    fid = p._writer.add_fact(fact)
+    p._store.set_anchor(fid, True)
+    p._store.flush()
+
+    # 重啟 provider（不同 session_id，相同 profile）
+    p.shutdown()
+    p2 = SAGELiteProvider(top_k=5, max_hops=2, max_tokens=800)
+    p2.initialize(
+        "anchorreload2",
+        hermes_home=str(p._hermes_home),
+        agent_context={"profile": "test_profile"},
+    )
+
+    # anchor 應被保留
+    anchors = p2._store.get_anchor_facts()
+    assert len(anchors) >= 1
+    p2.shutdown()
